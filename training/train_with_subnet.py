@@ -9,11 +9,10 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import h5py
 import tqdm
+import sys
 
-# ------------------------------ Data ------------------------------
-
-data_dir = '/home/mjojic/CSE575Project/brats2020-training-data/versions/3/BraTS2020_training_data/content/data'
-    
+data_dir = sys.argv[1]
+  
 h5_files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.h5')]
 np.random.seed(42)
 np.random.shuffle(h5_files)
@@ -81,7 +80,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = SegUnet(4, 3, return_bottleneck=True).to(device)
 subnet = Subnet(512, 3).to(device)
 
-model.load_state_dict(torch.load('seg_unet_warmup_best_loss.pth'))
+model.load_state_dict(torch.load('seg_unet_pretrain_compound_loss.pth'))
 print('model loaded')
 
 criterion = compound_tversky_loss
@@ -97,9 +96,6 @@ num_epochs = 50
 lambda_tv = 0.3
 lambda_ce = 0.1
 lambda_dice = 0.2
-
-best_loss = float('inf')
-best_accuracy = 0
 
 for epoch in range(num_epochs):
     model.train()
@@ -148,11 +144,3 @@ for epoch in range(num_epochs):
 
     print(f'Epoch {epoch+1} - Loss: {total_loss:.4f}')
     print(f'Epoch {epoch+1} - Pixel Level Accuracy: {total_pixel_level_accuracy:.4f}')
-
-    if total_loss < best_loss:
-        best_loss = total_loss
-        torch.save(model.state_dict(), 'seg_unet_reweight_best_loss.pth')
-    
-    if total_pixel_level_accuracy > best_accuracy:
-        best_accuracy = total_pixel_level_accuracy
-        torch.save(model.state_dict(), 'seg_unet_reweight_best_accuracy.pth')

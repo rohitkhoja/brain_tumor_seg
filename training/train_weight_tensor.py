@@ -9,11 +9,10 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import h5py
 import tqdm
+import sys
 
-# ------------------------------ Data ------------------------------
+data_dir = sys.argv[1]
 
-data_dir = '/home/mjojic/CSE575Project/brats2020-training-data/versions/3/BraTS2020_training_data/content/data'
-    
 h5_files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.h5')]
 np.random.seed(42)
 np.random.shuffle(h5_files)
@@ -70,25 +69,23 @@ def tversky_loss(pred, target, alpha=1.1, beta=0.7, smooth=1e-7):
     return 1 - tversky.mean()
 
 
-def compound_tversky_loss(pred, target, alpha = 0.6, beta = 0.4, gamma = 0.8):
-  target_indices = torch.argmax(target, dim=1)
-  return alpha * tversky_loss(pred, target) + beta * nn.CrossEntropyLoss()(pred, target_indices) + gamma * dice_loss(pred, target)
+def compound_tversky_loss(pred, target, w1 = 0.6, w2 = 0.4, w3 = 0.8, tv_alpha=1.1, tv_beta=0.7):
+    target_indices = torch.argmax(target, dim=1)
+    return w1 * tversky_loss(pred, target, tv_alpha, tv_beta) + w2 * nn.CrossEntropyLoss()(pred, target_indices) + w3 * dice_loss(pred, target)
 
 # ------------------------------ Training ------------------------------
-def concat_generators(*kwargs):
-	for gen in kwargs:
-		yield from gen
-
-
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-model = SegUnet(4, 3, return_bottleneck=True).to(device)
-model.load_state_dict(torch.load('seg_unet_warmup_best_loss.pth'))
+model = SegUnet(3, 3, return_bottleneck=True).to(device)
+model.load_state_dict(torch.load('seg_unet_pretrain_compound_loss.pth'))
 print('model loaded')
 
-weight_tensor = nn.Parameter(torch.ones(3)/3, requires_grad=True)
+weight_tensor = nn.Parameter(torch.ones(3, device=device) / 3, requires_grad=True)
 
-params = list(model.parameters()) + [weight_tensor]
+# tv_weight_tensor = nn.Parameter(torch.ones(2)/2, requires_grad=True)
+# tv_weight_tensor = tv_weight_tensor.to(device)
+
+params = list(model.parameters()) + [weight_tensor]# + [tv_weight_tensor]
 
 optimizer = torch.optim.Adam(params, lr=0.004)
 
@@ -96,37 +93,48 @@ criterion = compound_tversky_loss
 
 num_epochs = 50
 
-lambda_tv = 0.3
-lambda_ce = 0.1
-lambda_dice = 0.2
+lambda_tv = 0.33
+lambda_ce = 0.15
+lambda_dice = 0.3
 
-best_loss = float('inf')
-best_accuracy = 0
 
 for epoch in range(num_epochs):
-    model.train()
+    
     total_loss = 0
+    total_train_accuracy = 0
     for i, (images, masks) in tqdm.tqdm(enumerate(train_dataloader), total=len(train_dataloader), desc=f"Epoch {epoch+1}", leave=False):
+        model.train()
         images, masks = images.to(device), masks.to(device)
         
         # Forward pass
         pred_mask, bottleneck = model(images)
         
         softmax_weights = F.softmax(weight_tensor, dim=0)
-        print(softmax_weights)
         w_1 = softmax_weights[0]
         w_2 = softmax_weights[1]
         w_3 = softmax_weights[2]
 
-        loss = criterion(pred_mask, masks, w_1, w_2, w_3) + lambda_tv*(1-w_1) + lambda_ce*(1-w_2) + lambda_dice*(1-w_3)
+        # softmax_alpha_beta = F.softmax(tv_weight_tensor, dim=0)
+        # alpha = softmax_alpha_beta[0]
+        # beta = softmax_alpha_beta[1]
 
+        regularization = lambda_tv*(1-w_1) + lambda_ce*(1-w_2) + lambda_dice*(1-w_3) + 1/3 * ((w_1-1/3)**2 + (w_2-1/3)**2 + (w_3-1/3)**2)
+
+        loss = criterion(pred_mask, masks, w_1, w_2, w_3) + regularization
         # Backward pass
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
+        model.eval()
+        one_hot_pred = one_hot_c_values(pred_mask)
+
+        total_train_accuracy += pixel_level_accuracy(one_hot_pred, masks)
         total_loss += loss.item()
-    loss = total_loss / len(train_dataloader)
+        del loss, pred_mask, bottleneck, images, masks, one_hot_pred
+
+    total_loss /= len(train_dataloader)
+    total_train_accuracy /= len(train_dataloader)
     
     total_pixel_level_accuracy = 0
     model.eval()
@@ -140,13 +148,9 @@ for epoch in range(num_epochs):
     total_pixel_level_accuracy /= len(val_dataloader)
 
     print(f'Epoch {epoch+1} - Loss: {total_loss:.4f}')
-    print(f'Epoch {epoch+1} - Pixel Level Accuracy: {total_pixel_level_accuracy:.4f}')
+    print(f'Epoch {epoch+1} - Train Pixel Level Accuracy: {total_train_accuracy:.4f}')
+    print(f'Epoch {epoch+1} - Val Pixel Level Accuracy: {total_pixel_level_accuracy:.4f}')
+    softmax_weights = F.softmax(weight_tensor, dim=0)
+    print(f'Epoch {epoch+1} - Weights: {softmax_weights}')
 
-    if total_loss < best_loss:
-        best_loss = total_loss
-        torch.save(model.state_dict(), 'seg_unet_reweight_best_loss.pth')
-    
-    if total_pixel_level_accuracy > best_accuracy:
-        best_accuracy = total_pixel_level_accuracy
-        torch.save(model.state_dict(), 'seg_unet_reweight_best_accuracy.pth')
 

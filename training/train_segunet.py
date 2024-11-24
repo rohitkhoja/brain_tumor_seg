@@ -7,8 +7,9 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import h5py
 import tqdm
+import sys
 
-data_dir = '/home/mjojic/CSE575Project/brats2020-training-data/versions/3/BraTS2020_training_data/content/data'
+data_dir = sys.argv[1]
 
 class BrainScanDataset(Dataset):
     def __init__(self, file_paths, deterministic=False):
