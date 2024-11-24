@@ -2,6 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+'''
+Implementation of Seg-Unet explained in the following paper:
+Brain Tumor Segmentation from MRI Images using Hybrid Convolutional Neural Networks
+January 2020 Procedia Computer Science 167(6):2419-2428
+'''
+
 class EncoderBlock_Depth2(nn.Module):
     def __init__(self, in_channels, out_channels, kernel):
         super(EncoderBlock_Depth2, self).__init__()
